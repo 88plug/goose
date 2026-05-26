@@ -1,0 +1,54 @@
+name: validate aarch64 manylinux_2_28
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+    container:
+      image: quay.io/pypa/manylinux_2_28_aarch64@sha256:8b5f2b4e8c072ae5aefeb659f22c03e1ff46e6a82f154b6c904b106c87e65ff7
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Host + container info
+        run: |
+          uname -a
+          cat /etc/os-release | head -5
+          ldd --version | head -1
+
+      - name: Install build deps (manylinux_2_28 aarch64)
+        run: |
+          dnf install -y openssl-devel dbus-devel libxcb-devel cmake perl-core clang git tar
+
+      - name: Bootstrap rustup + pin channel from rust-toolchain.toml
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          CHANNEL=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
+          if [ -n "$CHANNEL" ]; then
+            "$HOME/.cargo/bin/rustup" install "$CHANNEL"
+            "$HOME/.cargo/bin/rustup" default "$CHANNEL"
+          fi
+          "$HOME/.cargo/bin/rustc" --version
+
+      - name: Build goose-cli (release, default features)
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo build --release -p goose-cli
+
+      - name: Symbol floor + smoke test
+        run: |
+          BIN=$(find target/release -maxdepth 1 -type f -name goose | head -1)
+          file "$BIN"
+          echo '--- GLIBC required symbols ---'
+          objdump -T "$BIN" | grep -oE 'GLIBC_[0-9.]+' | sort -V -u
+          echo '--- GLIBCXX required symbols ---'
+          objdump -T "$BIN" | grep -oE 'GLIBCXX_[0-9.]+' | sort -V -u
+          echo '--- CXXABI required symbols ---'
+          objdump -T "$BIN" | grep -oE 'CXXABI_[0-9.]+' | sort -V -u
+          echo '--- Smoke: goose --version ---'
+          "$BIN" --version
